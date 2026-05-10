@@ -148,7 +148,7 @@ class NormalizedCriteria:
 
 
 class MarketDataProvider(Protocol):
-    def load_market(self, market: str):
+    def load_market(self, market: str, needed_fields: set[str] | None = None):
         ...
 
 
@@ -162,11 +162,11 @@ class CompositeMarketDataProvider:
         self.a_share_provider = a_share_provider or BaoStockAProvider()
         self.hk_provider = hk_provider or YFinanceHKProvider()
 
-    def load_market(self, market: str):
+    def load_market(self, market: str, needed_fields: set[str] | None = None):
         if market == "A_SHARE":
-            return self.a_share_provider.load_market(market)
+            return self.a_share_provider.load_market(market, needed_fields=needed_fields)
         if market == "HK":
-            return self.hk_provider.load_market(market)
+            return self.hk_provider.load_market(market, needed_fields=needed_fields)
         raise ValueError(f"Unsupported market: {market}")
 
 
@@ -174,7 +174,7 @@ class BaoStockAProvider:
     def __init__(self, *, max_candidates: int | None = None) -> None:
         self.max_candidates = max_candidates or _max_provider_candidates()
 
-    def load_market(self, market: str):
+    def load_market(self, market: str, needed_fields: set[str] | None = None):
         _require_pandas()
         try:
             import baostock as bs
@@ -196,7 +196,12 @@ class BaoStockAProvider:
 
             rows = []
             for item in active_rows:
-                stock_row = _baostock_latest_row(bs, item["code"], item.get("code_name"))
+                stock_row = _baostock_latest_row(
+                    bs,
+                    item["code"],
+                    item.get("code_name"),
+                    needed_fields=needed_fields,
+                )
                 if stock_row:
                     rows.append(stock_row)
             return _a_share_rows_to_frame(rows)
@@ -208,7 +213,7 @@ class YFinanceHKProvider:
     def __init__(self, *, symbols: list[str] | None = None) -> None:
         self.symbols = symbols or HK_UNIVERSE
 
-    def load_market(self, market: str):
+    def load_market(self, market: str, needed_fields: set[str] | None = None):
         _require_pandas()
         try:
             import yfinance as yf
@@ -217,7 +222,7 @@ class YFinanceHKProvider:
 
         rows = []
         for symbol in self.symbols:
-            row = _yfinance_hk_row(yf, symbol)
+            row = _yfinance_hk_row(yf, symbol, needed_fields=needed_fields)
             if row:
                 rows.append(row)
         return _rows_to_frame(rows, "HK")
@@ -234,10 +239,11 @@ class StockScreener:
         data_sources: list[str] = []
         result_frames: list[Any] = []
         failed_markets: list[str] = []
+        needed_fields = _needed_fields_from_criteria(criteria)
 
         for market in markets:
             try:
-                frame = self.provider.load_market(market)
+                frame = self.provider.load_market(market, needed_fields=needed_fields)
             except Exception as exc:  # noqa: BLE001 - tool should report provider failures
                 warnings.append(f"{market} provider error: {exc}")
                 failed_markets.append(market)
@@ -292,7 +298,13 @@ def _is_a_share_stock_code(code: str) -> bool:
     return code.startswith("sh.6") or code.startswith("sz.0") or code.startswith("sz.3")
 
 
-def _baostock_latest_row(bs: Any, code: str, name: str | None = None) -> dict[str, Any] | None:
+def _baostock_latest_row(
+    bs: Any,
+    code: str,
+    name: str | None = None,
+    *,
+    needed_fields: set[str] | None = None,
+) -> dict[str, Any] | None:
     end = date.today()
     start = end - timedelta(days=140)
     fields = "date,code,close,volume,amount,turn,peTTM,pbMRQ"
@@ -314,6 +326,8 @@ def _baostock_latest_row(bs: Any, code: str, name: str | None = None) -> dict[st
     latest_close = _to_number(latest.get("close"))
     first_close = _to_number(first.get("close"))
     ytd_close = _to_number(ytd_row.get("close")) if ytd_row else None
+    needs_roe = needed_fields is not None and "roe" in needed_fields
+    latest_roe = _baostock_latest_dupont_roe(bs, code) if needs_roe else None
     return {
         "market": "A_SHARE",
         "code": latest.get("code"),
@@ -323,7 +337,7 @@ def _baostock_latest_row(bs: Any, code: str, name: str | None = None) -> dict[st
         "pe_ttm": _to_number(latest.get("peTTM")),
         "pb": _to_number(latest.get("pbMRQ")),
         "dividend_yield": None,
-        "roe": None,
+        "roe": latest_roe,
         "market_cap": None,
         "turnover": _to_number(latest.get("amount")),
         "price_change_60d": _pct_change(first_close, latest_close),
@@ -335,7 +349,34 @@ def _a_share_rows_to_frame(rows: list[dict[str, Any]]):
     return _rows_to_frame(rows, "A_SHARE")
 
 
-def _yfinance_hk_row(yf: Any, symbol: str) -> dict[str, Any] | None:
+def _baostock_latest_dupont_roe(bs: Any, code: str) -> float | None:
+    for year, quarter in _recent_year_quarters(8):
+        result = bs.query_dupont_data(code=code, year=year, quarter=quarter)
+        rows = _baostock_rows(result)
+        if not rows:
+            continue
+        value = _normalize_ratio_percent(rows[0].get("dupontROE"))
+        if value is not None:
+            return value
+    return None
+
+
+def _recent_year_quarters(limit: int) -> list[tuple[int, int]]:
+    today = date.today()
+    current_quarter = ((today.month - 1) // 3) + 1
+    year = today.year
+    quarter = current_quarter
+    periods: list[tuple[int, int]] = []
+    for _ in range(limit):
+        periods.append((year, quarter))
+        quarter -= 1
+        if quarter == 0:
+            year -= 1
+            quarter = 4
+    return periods
+
+
+def _yfinance_hk_row(yf: Any, symbol: str, *, needed_fields: set[str] | None = None) -> dict[str, Any] | None:
     ticker = yf.Ticker(symbol)
     try:
         with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
@@ -349,8 +390,10 @@ def _yfinance_hk_row(yf: Any, symbol: str) -> dict[str, Any] | None:
     first = history.iloc[0]
     ytd = history[history.index.date >= date(date.today().year, 1, 1)]
     ytd_first = ytd.iloc[0] if not ytd.empty else None
-    info = _safe_yfinance_info(ticker)
-    fast_info = _safe_mapping(ticker.fast_info)
+    info_fields = {"pe", "pe_ttm", "pb", "dividend_yield", "roe", "market_cap"}
+    needs_info = needed_fields is None or bool(needed_fields & info_fields)
+    info = _safe_yfinance_info(ticker) if needs_info else {}
+    fast_info = _safe_mapping(ticker.fast_info) if (needed_fields is None or "market_cap" in needed_fields) else {}
     latest_close = _to_number(latest.get("Close"))
     return {
         "market": "HK",
@@ -452,10 +495,21 @@ def _data_source_for_market(market: str) -> str:
 
 def _status_for_result(combined: Any | None, markets: list[str], failed_markets: list[str]) -> str:
     if combined is None:
-        return "error"
+        return "error" if failed_markets else "ok"
     if failed_markets and len(failed_markets) < len(markets):
         return "partial"
     return "ok"
+
+
+def _needed_fields_from_criteria(criteria: NormalizedCriteria) -> set[str]:
+    needed_fields = {"latest_price"}
+    for item in criteria.filters:
+        needed_fields.add(item.field)
+    if criteria.sort_by is not None:
+        needed_fields.add(SORT_ALIASES[criteria.sort_by][0])
+    if "recent_hot_high_valuation" in criteria.exclude:
+        needed_fields.update({"pe", "price_change_60d"})
+    return needed_fields
 
 
 def normalize_criteria(arguments: dict[str, Any]) -> NormalizedCriteria:
