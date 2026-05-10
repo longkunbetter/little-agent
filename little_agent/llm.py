@@ -22,6 +22,7 @@ class ToolCall:
 @dataclass(frozen=True)
 class ModelOutput:
     text: str
+    reasoning_text: str
     tool_calls: list[ToolCall]
     history_items: list[dict[str, Any]]
 
@@ -75,6 +76,7 @@ class OpenAIChatCompletionsClient:
         history_items: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
         text = message.content or ""
+        reasoning_text = _extract_reasoning_text(message_dump)
 
         history_items.append(_assistant_message_for_history(message_dump))
         for tool_call in message.tool_calls or []:
@@ -89,6 +91,7 @@ class OpenAIChatCompletionsClient:
 
         return ModelOutput(
             text=text.strip(),
+            reasoning_text=reasoning_text.strip(),
             tool_calls=tool_calls,
             history_items=history_items,
         )
@@ -120,6 +123,13 @@ def _assistant_message_for_history(message: dict[str, Any]) -> dict[str, Any]:
         if key in message:
             history_message[key] = message[key]
     return history_message
+
+
+def _extract_reasoning_text(message: dict[str, Any]) -> str:
+    value = message.get("reasoning_content")
+    if isinstance(value, str):
+        return value
+    return ""
 
 
 def _parse_tool_call(*, call_id: str, name: str, raw_arguments: str) -> ToolCall:
