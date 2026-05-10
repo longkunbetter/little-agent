@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .stock_screener import StockScreener
+
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
 
@@ -74,9 +76,10 @@ def _ask_user_tool() -> ToolDefinition:
 
 
 def _stock_screener_tool() -> ToolDefinition:
+    screener = StockScreener()
     return ToolDefinition(
         name="stock_screener",
-        description="Find A-share or HK stocks that match screening criteria.",
+        description="Find A-share or HK stocks that match screening criteria using BaoStock, yfinance, and local filtering.",
         parameters={
             "type": "object",
             "properties": {
@@ -87,7 +90,45 @@ def _stock_screener_tool() -> ToolDefinition:
                 },
                 "criteria": {
                     "type": "object",
-                    "description": "Screening criteria such as dividend yield, P/E, sector, or market cap.",
+                    "description": "Canonical or alias screening criteria. Prefer filters/exclude/sort_by.",
+                    "properties": {
+                        "filters": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "field": {
+                                        "type": "string",
+                                        "description": "One of pe, pe_ttm, pb, dividend_yield, roe, market_cap, turnover, price_change_60d, ytd_change.",
+                                    },
+                                    "op": {
+                                        "type": "string",
+                                        "enum": [">", ">=", "<", "<=", "=="],
+                                    },
+                                    "value": {"type": "number"},
+                                },
+                                "required": ["field", "op", "value"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "exclude": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional exclusions, e.g. recent_hot_high_valuation.",
+                        },
+                        "sort_by": {
+                            "type": "string",
+                            "enum": [
+                                "dividend_yield_desc",
+                                "pe_asc",
+                                "pe_ttm_asc",
+                                "pb_asc",
+                                "roe_desc",
+                                "market_cap_desc",
+                                "turnover_desc",
+                            ],
+                        },
+                    },
                     "additionalProperties": True,
                 },
                 "limit": {
@@ -100,7 +141,7 @@ def _stock_screener_tool() -> ToolDefinition:
             "required": ["market", "criteria"],
             "additionalProperties": False,
         },
-        handler=_not_implemented("stock_screener"),
+        handler=screener.screen,
     )
 
 
