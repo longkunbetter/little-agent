@@ -7,7 +7,6 @@ from typing import Any, Protocol
 
 from openai import OpenAI
 
-
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-pro"
 
@@ -37,11 +36,20 @@ class LLMClient(Protocol):
     ) -> ModelOutput:
         ...
 
+    def create_compaction_summary(
+        self,
+        *,
+        system_prompt: str,
+        payload: str,
+    ) -> str:
+        ...
+
 
 class OpenAIChatCompletionsClient:
     def __init__(self, *, model: str, base_url: str, client: OpenAI | None = None) -> None:
+        client = client or OpenAI(api_key=_api_key_from_env(), base_url=base_url)
         self.model = model
-        self.client = client or OpenAI(api_key=_api_key_from_env(), base_url=base_url)
+        self.client = client
 
     @classmethod
     def from_env(cls) -> "OpenAIChatCompletionsClient":
@@ -95,6 +103,20 @@ class OpenAIChatCompletionsClient:
             tool_calls=tool_calls,
             history_items=history_items,
         )
+
+    def create_compaction_summary(
+        self,
+        *,
+        system_prompt: str,
+        payload: str,
+    ) -> str:
+        messages = _sanitize_for_json([{"role": "user", "content": payload}])
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "system", "content": system_prompt}, *messages],
+        )
+        message = response.choices[0].message
+        return (message.content or "").strip()
 
 
 def _api_key_from_env() -> str | None:

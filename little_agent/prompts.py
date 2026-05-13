@@ -12,3 +12,24 @@ Important behavior:
 - Prefer concise, evidence-oriented answers.
 """.strip()
 
+
+COMPACTION_PROMPT = """
+You are compressing prior conversation context for a stock-picking assistant.
+
+Write a compact summary that preserves only the information needed for future
+turns:
+- stable user preferences and constraints
+- unresolved questions
+- important tool results and why they mattered
+- assumptions already accepted in the conversation
+- key portfolio or market scope facts
+
+Do not include:
+- repetitive chatter
+- status/progress lines
+- exact raw tool JSON unless a specific value is essential
+- anything that the recent verbatim conversation already preserves
+
+Return plain text only. Keep it concise but complete enough that the assistant
+can continue the conversation safely after older messages are removed.
+""".strip()

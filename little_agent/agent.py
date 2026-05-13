@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from io import StringIO
 from typing import Any
 
+from .context_manager import ContextConfig, ConversationContext
 from .llm import LLMClient, ModelOutput, ToolCall
-from .prompts import SYSTEM_PROMPT
+from .prompts import COMPACTION_PROMPT, SYSTEM_PROMPT
 from .tools import ToolRegistry
 
 
@@ -18,6 +19,10 @@ class AgentConfig:
     max_loops: int = 20
     show_progress: bool = True
     show_model_reasoning: bool = True
+    context_compaction_enabled: bool = True
+    context_trigger_chars: int = 12000
+    compact_recent_user_chars_budget: int = 3000
+    max_compaction_retries: int = 2
 
 
 class StockAgent:
@@ -33,7 +38,13 @@ class StockAgent:
         self.tools = tools
         self.config = config
         self.system_prompt = system_prompt
-        self.history: list[dict[str, Any]] = []
+        self.context = ConversationContext(
+            ContextConfig(
+                trigger_chars=config.context_trigger_chars,
+                recent_user_chars_budget=config.compact_recent_user_chars_budget,
+                max_compaction_retries=config.max_compaction_retries,
+            )
+        )
 
     def run_cli(self) -> None:
         print("little-agent stock assistant. Type 'exit' or 'quit' to stop.")
@@ -49,21 +60,22 @@ class StockAgent:
             if user_text.lower() in {"exit", "quit"}:
                 return
 
-            self.history.append({"role": "user", "content": user_text})
+            self.context.record_items([{"role": "user", "content": user_text}])
             self.run_task()
 
     def run_task(self) -> None:
         task_started_at = time.perf_counter()
         for loop_index in range(1, self.config.max_loops + 1):
+            self._maybe_compact_context()
             llm_started_at = time.perf_counter()
             self._print_progress("Thinking... asking the model how to approach this request.")
             model_output = self.client.create_response(
                 system_prompt=self.system_prompt,
-                history=self.history,
+                history=self.context.history_for_model(),
                 tools=self.tools.openai_tools(),
             )
             llm_elapsed = time.perf_counter() - llm_started_at
-            self.history.extend(model_output.history_items)
+            self.context.record_items(model_output.history_items)
             self._report_model_output(loop_index, model_output, llm_elapsed)
 
             if not model_output.tool_calls:
@@ -75,7 +87,7 @@ class StockAgent:
                 return
 
             tool_outputs = self._execute_tool_calls(model_output.tool_calls)
-            self.history.extend(tool_outputs)
+            self.context.record_items(tool_outputs)
 
         self._print_progress(
             f"Reached the maximum loop count before the task completed ({time.perf_counter() - task_started_at:.1f}s)."
@@ -110,6 +122,28 @@ class StockAgent:
         question = str(arguments.get("question") or "Please provide more detail.")
         answer = input(f"{question}\n> ").strip()
         return {"answer": answer}
+
+    def _maybe_compact_context(self) -> None:
+        if not self.config.context_compaction_enabled:
+            return
+        if not self.context.needs_compaction():
+            return
+
+        payload = self.context.compaction_payload()
+        if not payload:
+            return
+
+        self._print_progress("Compacting context to keep the conversation within budget.")
+        try:
+            summary = self.client.create_compaction_summary(
+                system_prompt=COMPACTION_PROMPT,
+                payload=payload,
+            )
+            self.context.apply_compaction(summary)
+            self._print_progress("Context compaction finished.")
+        except Exception as exc:  # noqa: BLE001 - compaction must not break the main task
+            self.context.note_compaction_failure()
+            self._print_progress(f"Context compaction skipped due to error: {exc}")
 
     def _report_model_output(self, loop_index: int, model_output: ModelOutput, elapsed: float) -> None:
         if model_output.tool_calls:
