@@ -6,14 +6,8 @@ from .tools import build_default_registry
 
 
 def main() -> None:
-    try:
-        client = OpenAIChatCompletionsClient.from_env()
-    except RuntimeError as exc:
-        print(exc)
-        return
-
     agent = StockAgent(
-        client=client,
+        client=OpenAIChatCompletionsClient.deferred_from_env(),
         tools=build_default_registry(),
         config=AgentConfig(),
     )

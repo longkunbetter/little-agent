@@ -69,11 +69,15 @@ class StockAgent:
             self._maybe_compact_context()
             llm_started_at = time.perf_counter()
             self._print_progress("Thinking... asking the model how to approach this request.")
-            model_output = self.client.create_response(
-                system_prompt=self.system_prompt,
-                history=self.context.history_for_model(),
-                tools=self.tools.openai_tools(),
-            )
+            try:
+                model_output = self.client.create_response(
+                    system_prompt=self.system_prompt,
+                    history=self.context.history_for_model(),
+                    tools=self.tools.openai_tools(),
+                )
+            except RuntimeError as exc:
+                print(exc)
+                return
             llm_elapsed = time.perf_counter() - llm_started_at
             self.context.record_items(model_output.history_items)
             self._report_model_output(loop_index, model_output, llm_elapsed)

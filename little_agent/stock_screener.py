@@ -8,12 +8,6 @@ from datetime import date, timedelta
 from io import StringIO
 from typing import Any, Protocol
 
-try:
-    import pandas as pd
-except ImportError:  # pragma: no cover - handled at runtime by provider
-    pd = None  # type: ignore[assignment]
-
-
 SUPPORTED_FIELDS = {
     "pe",
     "pe_ttm",
@@ -272,8 +266,15 @@ class StockScreener:
 
 
 def _require_pandas() -> None:
-    if pd is None:
-        raise RuntimeError("pandas is required for stock_screener. Run pip install -r requirements.txt.")
+    _pd()
+
+
+def _pd():
+    try:
+        import pandas as pd
+    except ImportError as exc:  # pragma: no cover - handled at runtime by provider
+        raise RuntimeError("pandas is required for stock_screener. Run pip install -r requirements.txt.") from exc
+    return pd
 
 
 def _baostock_rows(result: Any) -> list[dict[str, str]]:
@@ -430,9 +431,10 @@ def _safe_mapping(value: Any) -> dict[str, Any]:
 
 def _rows_to_frame(rows: list[dict[str, Any]], market: str):
     _require_pandas()
+    pd = _pd()
     if not rows:
-        return pd.DataFrame(columns=_output_fields())  # type: ignore[union-attr]
-    frame = pd.DataFrame(rows)  # type: ignore[union-attr]
+        return pd.DataFrame(columns=_output_fields())
+    frame = pd.DataFrame(rows)
     frame["market"] = market
     for field in _output_fields():
         if field not in frame.columns:
@@ -544,8 +546,9 @@ def normalize_criteria(arguments: dict[str, Any]) -> NormalizedCriteria:
 
 
 def _normalize_market_frame(raw, market: str):
+    pd = _pd()
     frame = raw.copy()
-    normalized = pd.DataFrame()  # type: ignore[union-attr]
+    normalized = pd.DataFrame()
     normalized["market"] = market
 
     for field, candidates in BASE_COLUMN_CANDIDATES.items():
@@ -703,8 +706,9 @@ def _concat_frames(frames: list[Any]) -> Any | None:
     non_empty = [frame for frame in frames if frame is not None and not frame.empty]
     if not non_empty:
         return None
+    pd = _pd()
     compact = [frame.dropna(axis=1, how="all") for frame in non_empty]
-    combined = pd.concat(compact, ignore_index=True)  # type: ignore[union-attr]
+    combined = pd.concat(compact, ignore_index=True)
     for field in _output_fields():
         if field not in combined.columns:
             combined[field] = None
@@ -783,6 +787,10 @@ def _json_safe(value: Any) -> Any:
         return None
     if isinstance(value, float) and math.isnan(value):
         return None
+    try:
+        pd = _pd()
+    except RuntimeError:
+        pd = None
     if pd is not None and pd.isna(value):
         return None
     return value

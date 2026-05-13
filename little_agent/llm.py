@@ -5,8 +5,6 @@ import os
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from openai import OpenAI
-
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-pro"
 
@@ -45,9 +43,42 @@ class LLMClient(Protocol):
         ...
 
 
+class DeferredLLMClient:
+    def __init__(self, factory):
+        self._factory = factory
+        self._client: LLMClient | None = None
+
+    def create_response(
+        self,
+        *,
+        system_prompt: str,
+        history: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> ModelOutput:
+        client = self._get_client()
+        return client.create_response(system_prompt=system_prompt, history=history, tools=tools)
+
+    def create_compaction_summary(
+        self,
+        *,
+        system_prompt: str,
+        payload: str,
+    ) -> str:
+        client = self._get_client()
+        return client.create_compaction_summary(system_prompt=system_prompt, payload=payload)
+
+    def _get_client(self) -> LLMClient:
+        if self._client is None:
+            self._client = self._factory()
+        return self._client
+
+
 class OpenAIChatCompletionsClient:
-    def __init__(self, *, model: str, base_url: str, client: OpenAI | None = None) -> None:
-        client = client or OpenAI(api_key=_api_key_from_env(), base_url=base_url)
+    def __init__(self, *, model: str, base_url: str, client: Any | None = None) -> None:
+        if client is None:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=_api_key_from_env(), base_url=base_url)
         self.model = model
         self.client = client
 
@@ -63,6 +94,10 @@ class OpenAIChatCompletionsClient:
             or os.environ.get("OPENAI_BASE_URL")
             or DEFAULT_BASE_URL,
         )
+
+    @classmethod
+    def deferred_from_env(cls) -> DeferredLLMClient:
+        return DeferredLLMClient(cls.from_env)
 
     def create_response(
         self,

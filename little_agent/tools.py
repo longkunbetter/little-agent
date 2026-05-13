@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Callable
-
-from .stock_screener import StockScreener
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -76,7 +75,6 @@ def _ask_user_tool() -> ToolDefinition:
 
 
 def _stock_screener_tool() -> ToolDefinition:
-    screener = StockScreener()
     return ToolDefinition(
         name="stock_screener",
         description="Find A-share or HK stocks that match screening criteria using BaoStock, yfinance, and local filtering.",
@@ -141,7 +139,7 @@ def _stock_screener_tool() -> ToolDefinition:
             "required": ["market", "criteria"],
             "additionalProperties": False,
         },
-        handler=screener.screen,
+        handler=_lazy_stock_screener_handler,
     )
 
 
@@ -229,3 +227,14 @@ def _not_implemented(tool_name: str) -> ToolHandler:
         }
 
     return handler
+
+
+def _lazy_stock_screener_handler(arguments: dict[str, Any]) -> dict[str, Any]:
+    return _get_stock_screener().screen(arguments)
+
+
+@lru_cache(maxsize=1)
+def _get_stock_screener():
+    from .stock_screener import StockScreener
+
+    return StockScreener()
